@@ -5,6 +5,7 @@
 package buildutil_test
 
 import (
+	"fmt"
 	"go/build"
 	"io/ioutil"
 	"os"
@@ -87,4 +88,67 @@ func TestContainingPackage(t *testing.T) {
 		}
 	}
 
+}
+
+func TestContainingPackageInGoModule(t *testing.T) {
+	tmp, err := ioutil.TempDir(os.TempDir(), "buildutil-containing-package-gomod")
+	if err != nil {
+		t.Errorf("unable to create a temporary directory in %s", os.TempDir())
+	}
+	defer os.RemoveAll(tmp)
+
+	moduleName := "golang.org/examples/hello"
+	gomodFile := filepath.Join(tmp, "go.mod")
+
+	err = ioutil.WriteFile(gomodFile, []byte(fmt.Sprintf("module %s\n", moduleName)), 0644)
+	if err != nil {
+		t.Errorf("failed to write a go.mod in tmpdir %s: %v", tmp, err)
+	}
+
+	if err := os.Mkdir(filepath.Join(tmp, "internal"), 0755); err != nil {
+		t.Errorf("failed to create internal dir in tmpdir %s: %v", tmp, err)
+	}
+
+	type test struct {
+		dir      string
+		filename string
+	}
+
+	testCases := make([]test, 0)
+
+	// create test files
+	for _, file := range []string{
+		filepath.Join(tmp, "hello.go"),
+		filepath.Join(tmp, "internal", "hello.go"),
+	} {
+		err := ioutil.WriteFile(
+			file,
+			[]byte(`
+				package hello
+
+				func Hello() string {
+					return "Hello, world."
+				}
+			`),
+			0644,
+		)
+		if err != nil {
+			t.Errorf("failed to create hello.go in tmpdir %s: %v", tmp, err)
+		}
+
+		testCases = append(testCases, test{tmp, file})
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("SourceFile_%s", tc.filename), func(t *testing.T) {
+			buildContext := build.Default
+			bp, err := buildutil.ContainingPackage(&buildContext, tc.dir, tc.filename)
+			if err != nil {
+				t.Errorf("failed to find a package: %v", err)
+			}
+			if bp.ImportPath != moduleName {
+				t.Errorf("invalid ImportPath, got %s, expected %s", bp.ImportPath, moduleName)
+			}
+		})
+	}
 }

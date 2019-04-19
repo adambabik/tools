@@ -5,6 +5,8 @@
 package buildutil
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -75,7 +77,18 @@ func ContainingPackage(ctxt *build.Context, dir, filename string) (*build.Packag
 		}
 	}
 
-	return nil, fmt.Errorf("can't find package containing %s", filename)
+	// Handle Go modules.
+	// TODO: should we detect if Go modules are supported at all?
+	gomodFile, ok := findGomodFile(filename)
+	if !ok {
+		return nil, fmt.Errorf("go module fallback: failed to find go.mod")
+	}
+	moduleName, err := parseModuleName(gomodFile)
+	if err != nil {
+		return nil, fmt.Errorf("go module fallback: failed to parse module name: %v", err)
+	}
+
+	return ctxt.Import(moduleName, filepath.Dir(gomodFile), build.FindOnly)
 }
 
 // -- Effective methods of file system interface -------------------------
@@ -209,4 +222,49 @@ func sameFile(x, y string) bool {
 		}
 	}
 	return false
+}
+
+// findGomodFile walks the given dir upwards and looks for
+// the first go.mod file. If found, it returns a path to it.
+func findGomodFile(aDir string) (string, bool) {
+	dir := aDir
+	// Per filepath.Dir() (actually filepath.Clean()) spec,
+	// it finally returns a single separator or "."
+	// which are of length 1.
+	for len(dir) > 1 {
+		parent := filepath.Dir(dir)
+		gomodFile := filepath.Join(parent, "go.mod")
+		if _, err := os.Stat(gomodFile); os.IsNotExist(err) {
+			dir = parent
+		} else {
+			return gomodFile, true
+		}
+	}
+
+	return "", false
+}
+
+func parseModuleName(gomodPath string) (string, error) {
+	file, err := os.Open(gomodPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	ok := scanner.Scan() // only the first line is interesting as it has the module name
+	if !ok {
+		return "", fmt.Errorf("failed to read go.mod file first line: %v", scanner.Err())
+	}
+
+	line := scanner.Text()
+	if !strings.HasPrefix(line, "module") {
+		return "", errors.New("invalid go.mod file")
+	}
+
+	words := strings.Fields(line)
+	if len(words) != 2 {
+		return "", errors.New("invalid module entry in go.mod file")
+	}
+	return words[1], nil
 }
